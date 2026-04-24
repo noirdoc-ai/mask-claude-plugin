@@ -1,0 +1,23 @@
+{
+  "name": "noirdoc",
+  "version": "0.1.0",
+  "description": "Privacy-preserving document workflow for Claude Code. Redact PII on the way in, reveal placeholders on the way out. German-first, local by default. Powered by the noirdoc CLI.",
+  "author": {
+    "name": "Nextaim GmbH",
+    "email": "hello@noirdoc.de",
+    "url": "https://nextaim.de"
+  },
+  "homepage": "https://noirdoc.de",
+  "repository": "https://github.com/nextaim-de/noirdoc-claude-plugin",
+  "license": "MIT",
+  "keywords": [
+    "pii",
+    "redaction",
+    "pseudonymization",
+    "privacy",
+    "dsgvo",
+    "gdpr",
+    "german",
+    "noirdoc"
+  ]
+}

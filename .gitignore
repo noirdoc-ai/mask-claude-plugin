@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.env
+.DS_Store
+dist/
+build/
+*.egg-info/
+
+# Local plugin state (should not appear in the plugin repo itself, but belt-and-braces)
+.noirdoc/
