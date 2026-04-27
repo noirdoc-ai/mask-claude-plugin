@@ -31,6 +31,12 @@ DEFAULT_NAMESPACE = "default"
 # file under it would let Claude reverse every placeholder in the session.
 # Blocked unconditionally, independent of workspace config and allowlist.
 VAULT_DIRNAME = ".noirdoc"
+# Workspace-relative directory for staged placeholder outputs. The skill writes
+# its placeholder-only answers here; the user runs `noirdoc reveal` against the
+# file in their own terminal, outside Claude Code. The directory is one-way:
+# Claude must not read its own staged output back, since doing so would re-pull
+# placeholder text into a fresh tool result and undo the round-trip's hygiene.
+STAGED_RELDIR = ".noirdoc/staged"
 
 # Conservative Bash tokenizer — only tokens that clearly look like filesystem
 # paths are surfaced. Complex shell (pipes, process substitution, $(...)) is
@@ -77,6 +83,23 @@ _MAPPING_DUMP_RES = (
 _SDK_IMPORT_RES = (
     re.compile(r"\bfrom\s+noirdoc(?:\.\w+)*(?![\w-])", re.IGNORECASE),
     re.compile(r"\bimport\s+noirdoc(?:\.\w+)*(?![\w-])", re.IGNORECASE),
+)
+
+# `noirdoc reveal` writes real names to stdout. Bash subprocess stdout becomes a
+# tool result in this session's context, so any in-session invocation puts
+# originals into the transcript and every subsequent API request replays them —
+# the same leak class as `ns show` / `lookup` / SDK imports. Blocked
+# unconditionally with no carve-out for output redirection: even
+# `... > file.txt` is denied, because stderr / future regressions / aliased
+# wrappers would each silently reopen the leak. Reveal is a human action that
+# runs in a regular terminal, outside Claude Code, against a staged
+# placeholder file under `.noirdoc/staged/`. The `--help` / `--version` /
+# `-h` forms remain queryable, mirroring the carve-outs for ns show / lookup.
+_REVEAL_RES = (
+    re.compile(
+        r"\bnoirdoc\s+reveal\b(?!\s+(?:-h|--help|--version)(?:\s|$))",
+        re.IGNORECASE,
+    ),
 )
 
 # Modifying `.noirdoc/config.toml` lets a prompt-injected Claude flip
@@ -293,6 +316,29 @@ def is_vault_path(path_str: str, cwd: str) -> bool:
     return candidate == vault or candidate.startswith(vault + os.sep)
 
 
+def _staged_root(cwd: str) -> str | None:
+    """Resolved absolute path of `<cwd>/.noirdoc/staged`, or None on error."""
+    try:
+        return os.path.realpath(os.path.join(cwd, STAGED_RELDIR))
+    except (OSError, ValueError):
+        return None
+
+
+def is_staged_path(path_str: str, cwd: str) -> bool:
+    """True iff `path_str` resolves to `<cwd>/.noirdoc/staged` or below."""
+    staged = _staged_root(cwd)
+    if staged is None:
+        return False
+    try:
+        expanded = os.path.expanduser(path_str)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(cwd, expanded)
+        candidate = os.path.realpath(expanded)
+    except (OSError, ValueError):
+        return False
+    return candidate == staged or candidate.startswith(staged + os.sep)
+
+
 def detects_mapping_dump(command: str) -> bool:
     """True iff `command` invokes a noirdoc subcommand that prints originals."""
     return any(pattern.search(command) for pattern in _MAPPING_DUMP_RES)
@@ -301,6 +347,11 @@ def detects_mapping_dump(command: str) -> bool:
 def detects_sdk_import(command: str) -> bool:
     """True iff `command` imports the noirdoc Python SDK (e.g. via `python -c`)."""
     return any(pattern.search(command) for pattern in _SDK_IMPORT_RES)
+
+
+def detects_reveal(command: str) -> bool:
+    """True iff `command` invokes `noirdoc reveal` (non-help/version forms)."""
+    return any(pattern.search(command) for pattern in _REVEAL_RES)
 
 
 def build_mapping_dump_block_payload() -> dict[str, Any]:
@@ -314,10 +365,68 @@ def build_mapping_dump_block_payload() -> dict[str, Any]:
         "\n"
         "This block is unconditional — independent of workspace config and "
         "allowlist. For a safe presence check, use `noirdoc ns list` (names "
-        "only). To restore originals in an assistant response, use `noirdoc "
-        "reveal` via the `/noirdoc-reveal` command — that is the intended, "
-        "minimally-scoped reveal path. For raw inspection, the user can run "
-        "these commands themselves outside Claude Code."
+        "only). To restore originals for the user, stage your placeholder "
+        "answer to `.noirdoc/staged/<ts>.txt` and have the user run `noirdoc "
+        "reveal --namespace <ns> < <path>` in their own terminal, outside "
+        "Claude Code — that is the intended, minimally-scoped reveal path. "
+        "For raw inspection, the user can run these commands themselves "
+        "outside Claude Code."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+
+
+def build_reveal_block_payload() -> dict[str, Any]:
+    reason = (
+        "Blocked: `noirdoc reveal` writes real-name data to stdout, and Bash "
+        "subprocess stdout becomes a tool result in this session's context. "
+        "Running it in-session would put originals into the transcript and "
+        "every subsequent API request in this session would replay them — "
+        "the same leak class as `noirdoc ns show`, `noirdoc lookup`, and the "
+        "noirdoc Python SDK.\n"
+        "\n"
+        "This block is unconditional — independent of workspace config and "
+        "allowlist, with no carve-out for `>` redirection (stderr, future "
+        "regressions, and aliased wrappers can each silently reopen the leak).\n"
+        "\n"
+        "Reveal is a human action, run outside Claude Code. The supported "
+        "shape: stage your placeholder-only answer to `.noirdoc/staged/<ts>.txt` "
+        "and tell the user to run, in their own terminal:\n"
+        "\n"
+        "  noirdoc reveal --namespace <ns> < .noirdoc/staged/<ts>.txt\n"
+        "\n"
+        "Real names then appear in the user's terminal, never in this session."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+
+
+def build_staged_block_payload(matches: list[str]) -> dict[str, Any]:
+    reason = (
+        f"The following path(s) are inside `.noirdoc/staged/`: "
+        f"{', '.join(matches)}.\n"
+        "This directory holds the assistant's staged placeholder-only answers. "
+        "It is one-way: the round-trip writes here, the user reveals from here "
+        "in their own terminal. Reading it back from this session re-pulls "
+        "placeholder text into a fresh tool result, defeating the round-trip's "
+        "context-hygiene.\n"
+        "\n"
+        "This block is unconditional — independent of workspace config and "
+        "allowlist. Do not `cat` / `Read` / `Grep` files under this directory.\n"
+        "\n"
+        "If the user asks to see the staged content, point them at the file path "
+        "and have them open it in their own editor. To get real names, they run "
+        "`noirdoc reveal --namespace <ns> < <path>` in a regular terminal."
     )
     return {
         "hookSpecificOutput": {
@@ -338,10 +447,12 @@ def build_sdk_import_block_payload() -> dict[str, Any]:
         "this would put originals into the transcript.\n"
         "\n"
         "This block is unconditional — independent of workspace config and "
-        "allowlist. The intended path back to originals is `noirdoc reveal` on "
-        "a specific piece of text via `/noirdoc-reveal`. For raw inspection of "
-        "the mapping, the user can run such Python in a regular terminal "
-        "outside Claude Code."
+        "allowlist. The intended path back to originals is for the user to "
+        "run `noirdoc reveal --namespace <ns> < .noirdoc/staged/<file>` in "
+        "their own terminal, outside Claude Code, against a placeholder "
+        "answer the assistant has staged. For raw inspection of the mapping, "
+        "the user can run such Python in a regular terminal outside Claude "
+        "Code."
     )
     return {
         "hookSpecificOutput": {
@@ -408,8 +519,10 @@ def build_vault_block_payload(matches: list[str]) -> dict[str, Any]:
         "This block is unconditional — it is not governed by workspace config and cannot "
         "be allowlisted. Do not attempt to bypass it.\n"
         "\n"
-        "If you need to restore real names in a redacted text, run the noirdoc CLI via "
-        "`/noirdoc-reveal`. It reveals inline without exposing the mapping itself."
+        "If you need to restore real names in a redacted text, stage your placeholder "
+        "answer to `.noirdoc/staged/<ts>.txt` and have the user run `noirdoc reveal "
+        "--namespace <ns> < <path>` in their own terminal, outside Claude Code. There "
+        "is no in-session reveal — the assistant never invokes `noirdoc reveal`."
     )
     return {
         "hookSpecificOutput": {
@@ -452,12 +565,20 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any] | None:
             return build_mapping_dump_block_payload()
         if isinstance(cmd, str) and detects_sdk_import(cmd):
             return build_sdk_import_block_payload()
+        if isinstance(cmd, str) and detects_reveal(cmd):
+            return build_reveal_block_payload()
         if isinstance(cmd, str) and detects_config_modify(cmd, cwd):
             return build_workspace_config_block_payload()
         if isinstance(cmd, str):
             literal = detects_vault_reference(cmd)
             if literal is not None:
                 return build_vault_block_payload([literal])
+        # No Bash-level staged-dir literal block: the skill's round-trip writes
+        # to `.noirdoc/staged/` via Bash (`mkdir -p`, redirect-to), and a
+        # literal regex can't tell write from read. The reveal block above is
+        # the load-bearing protection; the staged-dir check below catches the
+        # likely accidental Read/Edit/Grep on non-Bash tools, where intent is
+        # unambiguous.
 
     if tool_name in ("Edit", "Write", "NotebookEdit"):
         config_targets = [
@@ -471,6 +592,17 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any] | None:
     vault_matches = [p for p in paths if is_vault_path(p, cwd)]
     if vault_matches:
         return build_vault_block_payload(vault_matches)
+
+    # `.noirdoc/staged/` is a one-way directory: the skill writes here, the
+    # user reads from outside Claude. Block read-shaped tool calls; allow
+    # `Write` so the skill (or a follow-up that legitimately stages another
+    # placeholder answer) can create staged files. Bash path-token extraction
+    # never surfaces `.noirdoc/staged/...` (the shape doesn't match
+    # `_PATH_TOKEN_RE`), so leaving Bash in the check is a no-op there.
+    if tool_name != "Write":
+        staged_matches = [p for p in paths if is_staged_path(p, cwd)]
+        if staged_matches:
+            return build_staged_block_payload(staged_matches)
 
     config_path = find_config(Path(cwd))
     if config_path is None:

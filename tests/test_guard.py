@@ -945,17 +945,6 @@ class TestMappingDumpBlock:
         )
         assert result is None
 
-    def test_reveal_passes(self, tmp_path: Path) -> None:
-        """`reveal` is the intended output channel and must not be blocked here."""
-        result = guard.evaluate(
-            payload(
-                "Bash",
-                {"command": "echo '<<PERSON_1>> signed.' | noirdoc reveal --namespace foo"},
-                tmp_path,
-            ),
-        )
-        assert result is None
-
     def test_redact_passes(self, tmp_path: Path) -> None:
         """`redact` outputs placeholder content only."""
         result = guard.evaluate(
@@ -1094,6 +1083,155 @@ class TestSDKImportBlock:
         result = guard.evaluate(
             payload("Bash", {"command": "python -m noirdoc.cli --help"}, tmp_path),
         )
+        assert result is None
+
+
+# ---------- reveal block ----------
+
+
+class TestRevealBlock:
+    """`noirdoc reveal` writes real names to stdout, which would land in this
+    session's tool-result context. Blocked unconditionally with no carve-out
+    for output redirection — reveal is a human action that runs outside
+    Claude Code, against a placeholder file the assistant has staged."""
+
+    def test_reveal_blocked_unconditional(self, tmp_path: Path) -> None:
+        """The original `echo ... | noirdoc reveal --namespace foo` form must
+        be denied. Replaces the previous `test_reveal_passes` which treated
+        this as the intended output channel."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "echo '<<PERSON_1>> signed.' | noirdoc reveal --namespace foo"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "noirdoc reveal" in reason
+        assert "outside Claude Code" in reason
+
+    def test_reveal_blocked_with_redirect(self, tmp_path: Path) -> None:
+        """No carve-out for `> file.txt`: stderr leaks, future regressions, and
+        aliased wrappers can each silently reopen the leak. Lock the policy."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {
+                    "command": (
+                        "echo '<<PERSON_1>>' | noirdoc reveal --namespace foo "
+                        "> .noirdoc/staged/out.txt"
+                    ),
+                },
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_reveal_help_passes(self, tmp_path: Path) -> None:
+        """`--help`/`-h`/`--version` carve-outs mirror the `ns show` / `lookup`
+        exemptions — querying the CLI's own help/version doesn't leak data."""
+        for variant in ("noirdoc reveal --help", "noirdoc reveal -h", "noirdoc reveal --version"):
+            result = guard.evaluate(payload("Bash", {"command": variant}, tmp_path))
+            assert result is None, f"{variant!r} should pass"
+
+    def test_reveal_blocked_independent_of_config(self, tmp_path: Path) -> None:
+        """No `.noirdoc/config.toml` in the workspace — block still fires."""
+        assert not (tmp_path / ".noirdoc").exists()
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "noirdoc reveal --namespace foo < some.txt"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_reveal_with_workspace_config_blocked(self, workspace: Path) -> None:
+        """With workspace config present, reveal is still blocked
+        (unconditional, not allowlistable)."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "noirdoc reveal --namespace test-ns < x.txt"},
+                workspace,
+            ),
+        )
+        assert result is not None
+
+    def test_reveal_substring_in_unrelated_command_passes(self, tmp_path: Path) -> None:
+        """A command that mentions the words hyphenated (no space between
+        `noirdoc` and `reveal`) is not the CLI invocation — the regex
+        requires `\\s+` between the tokens."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "echo 'do not run noirdoc-reveal-other-thing in prod'"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+
+# ---------- staged-dir block ----------
+
+
+class TestStagedDirBlock:
+    """`.noirdoc/staged/` is a one-way directory: the skill writes here, the
+    user reveals from here in their own terminal. Read-shaped tool calls
+    against it are blocked; `Write` is allowed so the skill can stage."""
+
+    def test_read_tool_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Read", {"file_path": ".noirdoc/staged/20260427T120000.txt"}, tmp_path),
+        )
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert ".noirdoc/staged" in reason
+
+    def test_edit_tool_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Edit", {"file_path": ".noirdoc/staged/x.txt"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_grep_with_explicit_path_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Grep", {"path": ".noirdoc/staged"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_write_tool_passes(self, tmp_path: Path) -> None:
+        """`Write` is one-way creation — the skill needs to stage placeholder
+        outputs here. Allowed (the staging step uses Bash redirect anyway, but
+        Write should also work)."""
+        result = guard.evaluate(
+            payload("Write", {"file_path": ".noirdoc/staged/out.txt"}, tmp_path),
+        )
+        assert result is None
+
+    def test_blocked_independent_of_config(self, tmp_path: Path) -> None:
+        """No `.noirdoc/config.toml` in the workspace — staged-dir block
+        still fires (unconditional)."""
+        assert not (tmp_path / ".noirdoc").exists()
+        result = guard.evaluate(
+            payload("Read", {"file_path": ".noirdoc/staged/x.txt"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_blocked_with_absolute_path(self, tmp_path: Path) -> None:
+        target = tmp_path / ".noirdoc" / "staged" / "x.txt"
+        result = guard.evaluate(
+            payload("Read", {"file_path": str(target)}, tmp_path),
+        )
+        assert result is not None
+
+    def test_unrelated_path_passes(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Read", {"file_path": ".noirdoc/cache/x.txt"}, tmp_path),
+        )
+        # cache is fine — placeholder-only redacted copies live there and are
+        # readable by the assistant on purpose.
         assert result is None
 
 

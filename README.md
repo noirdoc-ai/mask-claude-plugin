@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12 | 3.13](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
 
-**Privacy-preserving document workflow for Claude Code.** Redact PII on the way in, reveal placeholders on the way out. Real names never enter Claude's context; the user sees real names in the final output. German-first, local by default.
+**Privacy-preserving document workflow for Claude Code.** Redact PII on the way in, stage placeholder answers on the way out. Real names never enter Claude's context — the user reveals them in their own terminal, outside Claude Code. German-first, local by default.
 
 Powered by [noirdoc](https://github.com/nextaim-de/noirdoc).
 
@@ -23,7 +23,7 @@ With this plugin installed:
 1. You: "Summarize `./incoming/vertrag-mueller.pdf`."
 2. PreToolUse hook blocks the raw read.
 3. The `noirdoc` skill takes over: runs `noirdoc redact` against the file, reads the clean copy (`<<PERSON_3>>`, `<<IBAN_CODE_1>>`…), writes the summary against those placeholders.
-4. Before showing you the summary, it pipes the text through `noirdoc reveal` — you see Anna Müller's real details. Claude's context never held them.
+4. Claude shows you the placeholder summary inline and stages it at `.noirdoc/staged/<ts>.txt`. To see real names, you run `noirdoc reveal --namespace <ns> < .noirdoc/staged/<ts>.txt` in your own terminal — outside Claude Code. Real names appear in *your* terminal, never in Claude's transcript.
 
 ## Requirements
 
@@ -66,11 +66,12 @@ From that point on, Claude will auto-route reads of protected paths through the 
 
 ## Commands
 
+Reveal is intentionally **not** a slash command. It runs in your own terminal, outside Claude Code, against placeholder files the assistant stages under `.noirdoc/staged/`. The skill's round-trip prints the exact `noirdoc reveal …` invocation for you to copy.
+
 | Command | Purpose |
 |---|---|
 | `/noirdoc-setup` | First-run setup: install check, namespace, protected paths, config file. Idempotent. |
 | `/noirdoc-redact <path>` | Redact a file into `.noirdoc/cache/`. |
-| `/noirdoc-reveal [text]` | Reveal placeholders in a string (defaults to the previous assistant message). |
 | `/noirdoc-status` | Show CLI version, namespace, protected paths, cache size. |
 | `/noirdoc-allow <path>` | Add a path to the guard's allowlist. Requires confirmation. |
 
@@ -119,6 +120,8 @@ Be clear-eyed about what a Claude Code plugin can and cannot do. Sensitive conte
 | Any tool touching `~/.noirdoc/` (the reversible mapping vault) | ✅ Unconditional | Resolved via `realpath` so `~`, absolute paths, symlinks, and `..` traversal all normalize. Independent of workspace config. Not allowlistable. |
 | `Bash` invoking `noirdoc ns show <ns>` or `noirdoc lookup <pseudonym>` | ✅ Unconditional | Both subcommands print real-name data to stdout, which would otherwise land in tool-result context. Regex-matched; bypassed by aliases (see gaps). |
 | `Bash` invoking the noirdoc Python SDK (`from noirdoc...`, `import noirdoc`) | ✅ Unconditional | The SDK reads the same reverse mapping that `ns show` exposes. Regex-matched against the literal `from`/`import` keywords; bypassable by encoded payloads or `__import__("noirdoc")`. |
+| `Bash` invoking `noirdoc reveal` | ✅ Unconditional | Reveal writes real names to stdout. No carve-out for `>`-redirection — the policy is "no in-session reveal." Reveal is a human action, run by the user in a regular terminal against a staged placeholder file. Help/version forms (`-h`, `--help`, `--version`) remain queryable. |
+| `Read` / `Edit` / `Grep` against `.noirdoc/staged/**` | ✅ Unconditional | The staged directory is one-way: the assistant writes here (placeholder-only answers), the user reveals from here outside the session. Reading it back would re-pull placeholder text into a fresh tool result. `Write` remains allowed so the round-trip can stage. |
 
 ### What the guard hook does NOT block
 
@@ -151,8 +154,8 @@ The plan's current answer: the skill nudges the user to paste from redacted copi
 - **PDF reveal is not supported** by noirdoc. You get a textual answer with real names restored, not a revealed PDF. See the [noirdoc README](https://github.com/nextaim-de/noirdoc#supported-formats) for the full round-trip support matrix.
 - **PPTX and images** redact but don't round-trip on reveal.
 - **Detection quality depends on noirdoc's upstream models.** For high-stakes documents, spot-check the redacted copy before trusting the output.
-- **The namespace mapping is reversible.** `~/.noirdoc/namespaces/<namespace>/` holds the real→placeholder map. Treat it with the same care as a secrets directory. The guard hard-blocks, unconditionally and non-allowlistably: (a) any tool call touching a path inside `~/.noirdoc/`, (b) any Bash invocation of `noirdoc ns show` or `noirdoc lookup` (both print real-name data to stdout), and (c) any Bash invocation that imports the noirdoc Python SDK with literal `from noirdoc...` / `import noirdoc...` keywords (the SDK reads the same mapping data). This closes the obvious exfil paths — filesystem reads, CLI subcommands, and SDK one-liners — so `/noirdoc-status` can name the vault path in the transcript without giving Claude a way to read it. The intended reveal path is `noirdoc reveal` on a specific piece of text you're about to show the user (via `/noirdoc-reveal`); reveal's output does enter context by design, so it should be the final step of a turn, not a speculative lookup.
-- **Residual exfil gaps** (documented, not closed): a Python one-liner that *encodes* its noirdoc SDK access (base64-decoded `exec`, `__import__("noirdoc")`, dynamic attribute access) to evade the literal `from`/`import` regex; an aliased or env-indirected CLI invocation that evades the Bash regex; `noirdoc reveal` called on every enumerated `<<PERSON_N>>` token. These are out of reach for a deterministic PreToolUse hook and belong to the defence-in-depth layer above the plugin (e.g., Noirdoc Cloud's outbound proxy).
+- **The namespace mapping is reversible.** `~/.noirdoc/namespaces/<namespace>/` holds the real→placeholder map. Treat it with the same care as a secrets directory. The guard hard-blocks, unconditionally and non-allowlistably: (a) any tool call touching a path inside `~/.noirdoc/`, (b) any Bash invocation of `noirdoc ns show`, `noirdoc lookup`, or `noirdoc reveal` (all three print real-name data to stdout), (c) any Bash invocation that imports the noirdoc Python SDK with literal `from noirdoc...` / `import noirdoc...` keywords (the SDK reads the same mapping data), and (d) any read-shaped tool call (`Read`/`Edit`/`Grep`/`Glob`/`NotebookRead`/`NotebookEdit`/`Bash`/`file://` `WebFetch`) against `.noirdoc/staged/**` (the assistant writes its placeholder-only answers there; reading them back would re-pull text into a fresh tool result). This closes the obvious exfil paths — filesystem reads of the vault, mapping-dump CLI subcommands, SDK one-liners, in-session reveal, and round-tripped staged content. The supported reveal path is for the user to run `noirdoc reveal --namespace <ns> < .noirdoc/staged/<ts>.txt` in a regular terminal **outside Claude Code** — real names appear there, the assistant's transcript never sees them.
+- **Residual exfil gaps** (documented, not closed): a Python one-liner that *encodes* its noirdoc SDK access (base64-decoded `exec`, `__import__("noirdoc")`, dynamic attribute access) to evade the literal `from`/`import` regex; an aliased or env-indirected CLI invocation that evades the Bash regex (including aliased `noirdoc reveal`); a base64-encoded subshell that reads `.noirdoc/staged/` without naming the path literally. These are out of reach for a deterministic PreToolUse hook and belong to the defence-in-depth layer above the plugin (e.g., Noirdoc Cloud's outbound proxy).
 
 ## How it works
 

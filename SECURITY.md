@@ -23,6 +23,7 @@ This plugin is pre-1.0 and changes quickly. Security issues are taken seriously,
 - Config parsing bugs that cause the hook to fail open when it should fail closed (and vice versa).
 - Path-extraction bugs (e.g., tricky `Bash` command shapes that route protected content into Claude's context).
 - Hook output handling that leaks raw config paths or workspace contents into an error message.
+- Anything that causes `noirdoc reveal`'s output, vault contents, or `.noirdoc/staged/**` content to land in a tool result. The reveal/staging policy is "no real names in the transcript, ever" — a regression here is a privacy bug.
 
 **Out of scope — upstream or architectural:**
 - Detection quality — false negatives in `noirdoc redact`. These are quality issues upstream in [noirdoc-core](https://github.com/nextaim-de/noirdoc/blob/main/SECURITY.md); open an issue there with a test case.

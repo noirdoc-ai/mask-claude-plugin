@@ -47,7 +47,7 @@ If `NOT_SETUP`, walk the user through setup before redacting anything:
 
 3. **Write the config.** Use the template at `${CLAUDE_PLUGIN_ROOT}/templates/config.toml` — substitute the chosen namespace. Write it to `.noirdoc/config.toml`. Default protected paths: `./incoming/**`, `./clients/**`, `./contracts/**`, `*.contract.*`, `*.nda.*`. Ask if those suit the user's project; edit the list before writing if not.
 
-4. **Gitignore the cache.** If this is a git repo, ensure `.noirdoc/cache/` is in `.gitignore` (append if missing). The `.noirdoc/config.toml` file itself is fine to commit; the cache is not.
+4. **Gitignore the cache and staged outputs.** If this is a git repo, ensure both `.noirdoc/cache/` and `.noirdoc/staged/` are in `.gitignore` (append if missing). The `.noirdoc/config.toml` file itself is fine to commit; the cache and staged placeholder outputs are not.
 
 ## The round-trip workflow
 
@@ -67,13 +67,27 @@ For any task on a protected/sensitive document, run this sequence:
 
 3. **Do the work on the clean copy.** Produce your summary, translation, extraction, or edits. Your output will contain placeholders like `<<PERSON_1>>`, `<<IBAN_CODE_1>>`, `<<LOCATION_3>>`.
 
-4. **Reveal before showing the user.** Pipe your textual output through `noirdoc reveal` — when invoked with no positional file argument, it reads stdin and writes revealed text to stdout:
+4. **Stage your placeholder answer for out-of-session reveal.** Do **not** invoke `noirdoc reveal` yourself — the guard blocks it, and even if it didn't, the CLI's stdout would land in this transcript. Instead, write your placeholder-only answer to a staged file and tell the user the exact command to run in their own terminal:
 
    ```bash
-   echo "<your output text>" | noirdoc reveal --namespace "<ns>"
+   mkdir -p .noirdoc/staged
+   TS=$(date +%Y%m%dT%H%M%S)
+   STAGED=".noirdoc/staged/${TS}.txt"
+   printf '%s' "<your placeholder output text>" > "$STAGED"
+   echo "Staged at $STAGED"
    ```
 
-   Capture the result and present *that* to the user. They see Anna Müller and the real IBAN; your context never held them.
+   Then say to the user, in this shape:
+
+   > "I produced your answer using placeholders only — Anna Müller is `<<PERSON_3>>`, etc. The placeholder version is staged at `.noirdoc/staged/<ts>.txt`. To see real names, run this **in your own terminal, outside Claude Code**:
+   >
+   > ```
+   > noirdoc reveal --namespace <ns> < .noirdoc/staged/<ts>.txt
+   > ```
+   >
+   > Real names will not appear in this session. That is intentional."
+
+   Show the placeholder version inline above the staging note so the user has the structure (no real names in context). Do not `cat` / `Read` the staged file back — the guard blocks that anyway, and re-reading it just re-pulls placeholder text into a fresh tool result.
 
 5. **Handle multi-file tasks.** For a folder of docs, redact each file into the cache with the same namespace (so placeholders stay consistent across files — `<<PERSON_1>>` is the same person everywhere). Read them all from the cache.
 
@@ -97,7 +111,8 @@ If the guardrail is flagging a file that genuinely doesn't contain personal data
 
 When the user asks you to do something the tooling can't fully deliver, say so up front:
 
-- **PDF reveal is not supported** by noirdoc itself. You can produce a *textual* answer (summary, extracted fields, translated paragraphs) with real names revealed, but you cannot hand back a redacted PDF and then un-redact it into a PDF. If the user wants "a PDF with real names," they already have it — the original. You work on the redacted text.
+- **Reveal is not in-session.** You produce a placeholder-only answer and stage it; the user runs `noirdoc reveal` in their own terminal. There is no inline preview of revealed text inside Claude — that's *deliberately* not provided, because Bash tool output becomes a tool result and that's exactly the leak we close.
+- **PDF reveal is not supported** by noirdoc itself. You can produce a *textual* answer (summary, extracted fields, translated paragraphs) which the user reveals out-of-session, but you cannot hand back a redacted PDF and then un-redact it into a PDF. If the user wants "a PDF with real names," they already have it — the original. You work on the redacted text.
 - **PPTX and images** redact but do not round-trip on reveal. Flag this if the user expects a revealed PPTX.
 - **Reveal operates on text, not files.** It rewrites placeholders in a string. It doesn't un-redact files on disk.
 - **Detection is model-quality-limited.** noirdoc's recall is good for German-first documents with `[full]` installed but not perfect. If the document is high-stakes (legal, medical, regulated), suggest the user spot-check the redacted copy before trusting your output.
@@ -131,12 +146,13 @@ For guaranteed in-flight scrubbing (where you can prove nothing sensitive left t
 
 The guard hook enforces these as unconditional, non-allowlistable blocks at the obvious-case level — but you are responsible for not *trying*, so the transcript doesn't fill with block notices, and so you don't reach for evasions (encoded payloads, `__import__("noirdoc")`, aliased CLI) that the regex layer can't see. If you need a counts-only check that a namespace exists and how much is in it, use `noirdoc ns summary <ns>` (entity-type counts, no originals). If you need just the names of namespaces, use `noirdoc ns list`. If the user asks for the raw mapping, tell them to inspect it themselves in a regular terminal outside Claude Code.
 
-The only sanctioned path from placeholders back to originals is `noirdoc reveal` on a specific piece of text you're about to hand the user — and even that puts originals into context from that turn onward, so use it as the final step before responding, not speculatively.
+There is no in-session reveal. You never invoke `noirdoc reveal` — the guard hard-blocks it from Bash, with no carve-out for redirection. Real-name retrieval is a human action: you stage a placeholder-only answer to `.noirdoc/staged/<ts>.txt`, the user runs `noirdoc reveal --namespace <ns> < .noirdoc/staged/<ts>.txt` in a regular terminal outside Claude Code. The transcript never holds the real values.
 
 ## Related commands
 
 - `/noirdoc-setup` — run the setup flow explicitly (idempotent).
 - `/noirdoc-redact <path>` — one-shot redact without round-trip.
-- `/noirdoc-reveal` — reveal the last assistant message or a supplied string.
 - `/noirdoc-status` — show current namespace, protected paths, cache size, noirdoc version.
 - `/noirdoc-allow <path>` — append a path to the allowlist. Requires confirming with the user first.
+
+Reveal is intentionally **not** a slash command. It runs in the user's own terminal, outside Claude Code: `noirdoc reveal --namespace <ns> < .noirdoc/staged/<file>`. The skill's round-trip prints the exact form for the user to copy.

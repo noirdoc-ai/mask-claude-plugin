@@ -1,6 +1,6 @@
 {
   "name": "noirdoc",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Privacy-preserving document workflow for Claude Code. Redact PII on the way in, reveal placeholders on the way out. German-first, local by default. Powered by the noirdoc CLI.",
   "author": {
     "name": "Nextaim GmbH",
