@@ -116,6 +116,9 @@ Be clear-eyed about what a Claude Code plugin can and cannot do. Sensitive conte
 | `NotebookRead` / `NotebookEdit` of a notebook in a protected path | ✅ | `notebook_path` is checked. |
 | `WebFetch` on `file://` URLs pointing at protected paths | ✅ | Local `file://` URLs are extracted and checked. |
 | `Bash` referencing a clearly-path-shaped token (`cat ./incoming/x.pdf`) | ⚠️ Best-effort | Simple cases only. Pipes, process substitution, `$(...)`, globbing by the shell — **not parsed**. Use `/noirdoc-redact` first for complex flows. |
+| Any tool touching `~/.noirdoc/` (the reversible mapping vault) | ✅ Unconditional | Resolved via `realpath` so `~`, absolute paths, symlinks, and `..` traversal all normalize. Independent of workspace config. Not allowlistable. |
+| `Bash` invoking `noirdoc ns show <ns>` or `noirdoc lookup <pseudonym>` | ✅ Unconditional | Both subcommands print real-name data to stdout, which would otherwise land in tool-result context. Regex-matched; bypassed by aliases (see gaps). |
+| `Bash` invoking the noirdoc Python SDK (`from noirdoc...`, `import noirdoc`) | ✅ Unconditional | The SDK reads the same reverse mapping that `ns show` exposes. Regex-matched against the literal `from`/`import` keywords; bypassable by encoded payloads or `__import__("noirdoc")`. |
 
 ### What the guard hook does NOT block
 
@@ -148,7 +151,8 @@ The plan's current answer: the skill nudges the user to paste from redacted copi
 - **PDF reveal is not supported** by noirdoc. You get a textual answer with real names restored, not a revealed PDF. See the [noirdoc README](https://github.com/nextaim-de/noirdoc#supported-formats) for the full round-trip support matrix.
 - **PPTX and images** redact but don't round-trip on reveal.
 - **Detection quality depends on noirdoc's upstream models.** For high-stakes documents, spot-check the redacted copy before trusting the output.
-- **The namespace mapping is reversible.** `~/.noirdoc/namespaces/<namespace>/` holds the real→placeholder map. Treat it with the same care as a secrets directory.
+- **The namespace mapping is reversible.** `~/.noirdoc/namespaces/<namespace>/` holds the real→placeholder map. Treat it with the same care as a secrets directory. The guard hard-blocks, unconditionally and non-allowlistably: (a) any tool call touching a path inside `~/.noirdoc/`, (b) any Bash invocation of `noirdoc ns show` or `noirdoc lookup` (both print real-name data to stdout), and (c) any Bash invocation that imports the noirdoc Python SDK with literal `from noirdoc...` / `import noirdoc...` keywords (the SDK reads the same mapping data). This closes the obvious exfil paths — filesystem reads, CLI subcommands, and SDK one-liners — so `/noirdoc-status` can name the vault path in the transcript without giving Claude a way to read it. The intended reveal path is `noirdoc reveal` on a specific piece of text you're about to show the user (via `/noirdoc-reveal`); reveal's output does enter context by design, so it should be the final step of a turn, not a speculative lookup.
+- **Residual exfil gaps** (documented, not closed): a Python one-liner that *encodes* its noirdoc SDK access (base64-decoded `exec`, `__import__("noirdoc")`, dynamic attribute access) to evade the literal `from`/`import` regex; an aliased or env-indirected CLI invocation that evades the Bash regex; `noirdoc reveal` called on every enumerated `<<PERSON_N>>` token. These are out of reach for a deterministic PreToolUse hook and belong to the defence-in-depth layer above the plugin (e.g., Noirdoc Cloud's outbound proxy).
 
 ## How it works
 

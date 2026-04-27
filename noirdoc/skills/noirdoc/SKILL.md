@@ -120,6 +120,19 @@ For guaranteed in-flight scrubbing (where you can prove nothing sensitive left t
 - **Namespace mappings are reversible.** Treat `~/.noirdoc/namespaces/<ns>/` with the same care as a secrets directory. Don't copy it around, don't commit it, don't share it.
 - **Purging a namespace** breaks reveal for anything redacted under it. Only purge when you no longer need to un-redact anything that used it.
 
+### Never read the vault
+
+`~/.noirdoc/` holds the reversible real-name ↔ placeholder mapping for every redacted document. **Do not read anything under it, and do not invoke any command whose stdout would leak its contents.** Specifically never:
+
+- `Read` / `Edit` / `Grep` / `Glob` / `cat` / `head` / `jq` against any file under `~/.noirdoc/`.
+- `noirdoc ns show <ns>` — dumps the full reverse mapping as JSON.
+- `noirdoc lookup <pseudonym>` — returns the original behind a placeholder (enumerable).
+- Python one-liners that import the noirdoc SDK (`python -c 'from noirdoc.pseudonymization import …'`, `python -c 'import noirdoc'`) — the SDK exposes the same mapping data as `ns show`.
+
+The guard hook enforces these as unconditional, non-allowlistable blocks at the obvious-case level — but you are responsible for not *trying*, so the transcript doesn't fill with block notices, and so you don't reach for evasions (encoded payloads, `__import__("noirdoc")`, aliased CLI) that the regex layer can't see. If you need a counts-only check that a namespace exists and how much is in it, use `noirdoc ns summary <ns>` (entity-type counts, no originals). If you need just the names of namespaces, use `noirdoc ns list`. If the user asks for the raw mapping, tell them to inspect it themselves in a regular terminal outside Claude Code.
+
+The only sanctioned path from placeholders back to originals is `noirdoc reveal` on a specific piece of text you're about to hand the user — and even that puts originals into context from that turn onward, so use it as the final step before responding, not speculatively.
+
 ## Related commands
 
 - `/noirdoc-setup` — run the setup flow explicitly (idempotent).

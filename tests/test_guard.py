@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -193,6 +194,33 @@ class TestExtractPaths:
     def test_unknown_tool_ignored(self) -> None:
         assert guard.extract_paths("SomeNewTool", {"foo": "bar"}) == []
 
+    def test_bash_quoted_path_with_spaces(self) -> None:
+        """shlex.split keeps a quoted path with spaces as a single token."""
+        paths = guard.extract_paths(
+            "Bash",
+            {"command": 'cat "./incoming/x with spaces.pdf"'},
+        )
+        assert paths == ["./incoming/x with spaces.pdf"]
+
+    def test_bash_single_quoted_path_with_spaces(self) -> None:
+        paths = guard.extract_paths(
+            "Bash",
+            {"command": "cat './incoming/x with spaces.pdf'"},
+        )
+        assert paths == ["./incoming/x with spaces.pdf"]
+
+    def test_bash_malformed_quoting_falls_back(self) -> None:
+        """Unclosed quote → shlex raises ValueError → fall back to str.split()."""
+        # Should not raise; result may be empty, but the call must succeed.
+        paths = guard.extract_paths(
+            "Bash",
+            {"command": 'cat "./incoming/unclosed'},
+        )
+        # str.split() yields ['cat', '"./incoming/unclosed'] — the second token
+        # starts with `"` so the path regex doesn't match. We just need
+        # graceful behavior, not a specific match.
+        assert isinstance(paths, list)
+
 
 # ---------- evaluate ----------
 
@@ -365,6 +393,397 @@ class TestEvaluate:
         )
         assert result is not None
         assert "mandant.nda.docx" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+# ---------- vault block (unconditional) ----------
+
+
+class TestVaultBlock:
+    """`~/.noirdoc/` is unreachable regardless of workspace config or allowlist.
+
+    Tests fake `HOME` via monkeypatch so the vault lives in tmp.
+    """
+
+    def _fake_home(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> Path:
+        home = tmp_path / "home"
+        home.mkdir()
+        vault = home / ".noirdoc"
+        (vault / "namespaces" / "mandant-foo").mkdir(parents=True)
+        (vault / "namespaces" / "mandant-foo" / "map.json").write_text("{}")
+        monkeypatch.setenv("HOME", str(home))
+        return vault
+
+    def test_read_of_mapping_file_blocks_without_workspace_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        vault = self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Read",
+                {"file_path": str(vault / "namespaces" / "mandant-foo" / "map.json")},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "~/.noirdoc/" in reason
+        assert "unconditional" in reason.lower()
+
+    def test_read_of_vault_root_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        vault = self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(payload("Read", {"file_path": str(vault)}, tmp_path))
+        assert result is not None
+
+    def test_read_with_tilde_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Read",
+                {"file_path": "~/.noirdoc/namespaces/mandant-foo/map.json"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_cat_of_mapping_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        vault = self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": f"cat {vault}/namespaces/mandant-foo/map.json"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_grep_in_vault_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        vault = self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Grep",
+                {"pattern": "Müller", "path": str(vault / "namespaces")},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_sibling_dir_not_blocked(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """`~/.noirdoc-notes/` must not match `~/.noirdoc/` by prefix."""
+        home = tmp_path / "home"
+        home.mkdir()
+        sibling = home / ".noirdoc-notes"
+        sibling.mkdir()
+        (sibling / "readme.md").write_text("safe")
+        monkeypatch.setenv("HOME", str(home))
+        result = guard.evaluate(
+            payload("Read", {"file_path": str(sibling / "readme.md")}, tmp_path),
+        )
+        assert result is None
+
+    def test_allowlist_does_not_override_vault_block(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Workspace allowlist must not reach into the vault."""
+        (tmp_path / ".noirdoc").mkdir()
+        (tmp_path / ".noirdoc" / "config.toml").write_text(
+            '[noirdoc]\nnamespace = "x"\n'
+            "[noirdoc.guard]\nenabled = true\n"
+            'protected_paths = ["./incoming/**"]\n'
+            'allowlist = ["~/.noirdoc/**"]\n',
+        )
+        vault = self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Read",
+                {"file_path": str(vault / "namespaces" / "mandant-foo" / "map.json")},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_disabled_workspace_guard_still_blocks_vault(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """`guard.enabled = false` disables workspace protection, not the vault block."""
+        (tmp_path / ".noirdoc").mkdir()
+        (tmp_path / ".noirdoc" / "config.toml").write_text(
+            '[noirdoc]\nnamespace = "x"\n[noirdoc.guard]\nenabled = false\n',
+        )
+        vault = self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Read",
+                {"file_path": str(vault / "namespaces" / "mandant-foo" / "map.json")},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_relative_traversal_into_vault_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        vault = self._fake_home(monkeypatch, tmp_path)
+        nested = tmp_path / "deep" / "nested"
+        nested.mkdir(parents=True)
+        rel = os.path.relpath(str(vault / "namespaces" / "mandant-foo" / "map.json"), str(nested))
+        result = guard.evaluate(payload("Read", {"file_path": rel}, nested))
+        assert result is not None
+
+    def test_non_vault_path_with_fake_home_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        self._fake_home(monkeypatch, tmp_path)
+        target = tmp_path / "safe" / "notes.md"
+        target.parent.mkdir()
+        target.write_text("ok")
+        result = guard.evaluate(payload("Read", {"file_path": str(target)}, tmp_path))
+        assert result is None
+
+
+# ---------- mapping-dump command block ----------
+
+
+class TestMappingDumpBlock:
+    """Bash invocations of noirdoc subcommands that leak originals are blocked
+    unconditionally — the block fires without any workspace config."""
+
+    def test_ns_show_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns show mandant-foo"}, tmp_path),
+        )
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "noirdoc ns show" in reason or "noirdoc ns list" in reason
+
+    def test_lookup_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "noirdoc lookup '<<PERSON_1>>' --namespace mandant-foo"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_ns_show_extra_spaces_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc  ns   show   mandant-foo"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_ns_show_with_absolute_binary_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "/usr/local/bin/noirdoc ns show mandant-foo"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_ns_show_help_passes(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns show --help"}, tmp_path),
+        )
+        assert result is None
+
+    def test_lookup_help_passes(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc lookup --help"}, tmp_path),
+        )
+        assert result is None
+
+    def test_ns_list_passes(self, tmp_path: Path) -> None:
+        """`ns list` only prints namespace names and must not be blocked."""
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns list"}, tmp_path),
+        )
+        assert result is None
+
+    def test_reveal_passes(self, tmp_path: Path) -> None:
+        """`reveal` is the intended output channel and must not be blocked here."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "echo '<<PERSON_1>> signed.' | noirdoc reveal --namespace foo"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+    def test_redact_passes(self, tmp_path: Path) -> None:
+        """`redact` outputs placeholder content only."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "noirdoc redact --namespace foo ./incoming/x.pdf"},
+                tmp_path,
+            ),
+        )
+        # May be blocked for the ./incoming/ path under workspace config, but
+        # must not hit the mapping-dump block.
+        if result is not None:
+            reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+            assert "mapping" not in reason.lower() or "noirdoc-protected" in reason.lower()
+
+    def test_ns_show_substring_in_unrelated_command_passes(self, tmp_path: Path) -> None:
+        """A command that mentions the words but doesn't invoke noirdoc is fine."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "echo 'do not run noirdoc-ns-show-foo in prod'"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+
+# ---------- SDK-import block ----------
+
+
+class TestSDKImportBlock:
+    """Bash invocations that import the noirdoc Python SDK leak the same data
+    as `noirdoc ns show`. Blocked unconditionally, fires without workspace config."""
+
+    def test_python_dash_c_from_noirdoc_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {
+                    "command": (
+                        "python -c 'from noirdoc.pseudonymization import "
+                        'PseudonymMapper; print(PseudonymMapper.load("ns"))\''
+                    ),
+                },
+                tmp_path,
+            ),
+        )
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "noirdoc Python SDK" in reason
+
+    def test_python_dash_c_import_noirdoc_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "python -c 'import noirdoc'"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_pypy3_from_noirdoc_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": 'pypy3 -c "from noirdoc.detectors import X"'},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_dotted_submodule_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "python -c 'from noirdoc.sdk import redact'"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_case_insensitive(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "python -c 'IMPORT NOIRDOC'"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_noirdoc_cloud_does_not_match(self, tmp_path: Path) -> None:
+        """`noirdoc-cloud` is a different package; the regex's `(?![\\w-])`
+        lookahead must reject it."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "python -c 'from noirdoc-cloud import client'"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+    def test_noirdoctest_does_not_match(self, tmp_path: Path) -> None:
+        """`noirdoctest` is a hypothetical package starting with `noirdoc` but
+        continuing as a word — must not trip the import block."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "python -c 'from noirdoctest import t'"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+    def test_noirdoc_underscore_does_not_match(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "python -c 'import noirdoc_other'"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+    def test_cli_redact_passes(self, tmp_path: Path) -> None:
+        """`noirdoc redact` is a CLI invocation, no `import` or `from` keyword."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "noirdoc redact --namespace foo input.pdf -o out.pdf"},
+                tmp_path,
+            ),
+        )
+        # May still pass through (no path under protected_paths in tmp_path),
+        # but must not hit the SDK-import block.
+        if result is not None:
+            reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+            assert "noirdoc Python SDK" not in reason
+
+    def test_python_module_invocation_passes(self, tmp_path: Path) -> None:
+        """`python -m noirdoc.cli` is a CLI invocation via -m, not an import
+        statement — the regex looks for `from`/`import` keywords specifically."""
+        result = guard.evaluate(
+            payload("Bash", {"command": "python -m noirdoc.cli --help"}, tmp_path),
+        )
+        assert result is None
 
 
 # ---------- integration: script CLI ----------

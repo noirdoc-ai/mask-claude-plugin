@@ -1,5 +1,8 @@
 {
   "name": "nextaim",
+  "metadata": {
+    "description": "Nextaim's Claude Code marketplace — privacy-preserving tooling for sensitive document workflows. Currently ships the noirdoc plugin."
+  },
   "owner": {
     "name": "Nextaim GmbH",
     "email": "hello@noirdoc.de"
