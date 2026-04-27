@@ -5,8 +5,11 @@ noirdoc-claude-plugin — PreToolUse guard.
 Reads a Claude Code tool-use event from stdin, walks up from the tool's cwd
 looking for `.noirdoc/config.toml`, and blocks Read/Edit/Write/Bash tool calls
 whose target paths match configured protected globs. Uses stdlib only; never
-imports noirdoc. Fails open (passes through) when no config exists or config
-is malformed, so users who have not opted in experience no false positives.
+imports noirdoc. Fails open (passes through) when no config exists at all so
+users who have not opted in experience no false positives. Once a config
+exists, parse errors and schema violations fail closed — a tampered or
+truncated config is more likely to be an attack/incident signal than a
+benign edge case, and silently disabling the guard is the wrong default.
 """
 
 from __future__ import annotations
@@ -50,10 +53,19 @@ _PATH_TOKEN_RE = re.compile(
 #     behind a single placeholder. Enumeration makes this a per-token leak.
 # Best-effort regex — bypassed by aliases, env indirection, or Python imports
 # of the SDK. Catches the obvious case where Claude invokes by name. The
-# lookahead `(?=[^\s-])` excludes `--help`/`--version` invocations.
+# negative lookahead carves out the literal help/version forms only — flag-first
+# invocations like `noirdoc ns show --json <ns>` and the argparse `--`
+# end-of-options separator must still match (they leak just like the
+# positional-first form).
 _MAPPING_DUMP_RES = (
-    re.compile(r"\bnoirdoc\s+ns\s+show\s+(?=[^\s-])\S", re.IGNORECASE),
-    re.compile(r"\bnoirdoc\s+lookup\s+(?=[^\s-])\S", re.IGNORECASE),
+    re.compile(
+        r"\bnoirdoc\s+ns\s+show\b(?!\s+(?:-h|--help|--version)(?:\s|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bnoirdoc\s+lookup\b(?!\s+(?:-h|--help|--version)(?:\s|$))",
+        re.IGNORECASE,
+    ),
 )
 
 # Importing the noirdoc Python SDK from a Bash one-liner exposes the same
@@ -65,6 +77,28 @@ _MAPPING_DUMP_RES = (
 _SDK_IMPORT_RES = (
     re.compile(r"\bfrom\s+noirdoc(?:\.\w+)*(?![\w-])", re.IGNORECASE),
     re.compile(r"\bimport\s+noirdoc(?:\.\w+)*(?![\w-])", re.IGNORECASE),
+)
+
+# Modifying `.noirdoc/config.toml` lets a prompt-injected Claude flip
+# `guard.enabled = false` or push `**` into `allowlist`, neutralizing the
+# workspace guard. Once a config exists, Edit/Write/NotebookEdit on it and any
+# Bash command that references it literally are denied.
+# Reads remain allowed (the Read tool is fine; the config has no PII), and the
+# block does not apply when no config exists yet so that `/noirdoc-setup` can
+# create one.
+_CONFIG_LITERAL_RE = re.compile(r"\.noirdoc/config\.toml\b", re.IGNORECASE)
+
+# Literal vault-pattern scan over the full Bash command string. shlex-based
+# token extraction collapses subshell bodies (`bash -c "..."`, `eval "..."`,
+# `python -c "..."`) into one opaque token, so the token-based vault check
+# misses them. This regex re-scans the raw command and catches `~/.noirdoc/`,
+# `$HOME/.noirdoc/`, `${HOME}/.noirdoc/`, and absolute home-dir paths ending
+# in `/.noirdoc/`. Best-effort — defeated by base64-encoded payloads or
+# character-by-character construction.
+_VAULT_LITERAL_RE = re.compile(
+    r"(?:^|[\s'\"`(=])"
+    r"(?:~|\$HOME|\$\{HOME\}|/Users/[^/\s'\"`]+|/home/[^/\s'\"`]+)"
+    r"/\.noirdoc(?:/|$|[\s'\"`])"
 )
 
 
@@ -190,6 +224,56 @@ def _vault_root() -> str | None:
         return None
 
 
+def is_existing_workspace_config(path_str: str, cwd: str) -> bool:
+    """True iff `path_str` resolves to the `.noirdoc/config.toml` that already
+    governs `cwd` (via walk-up). Returns False when no config exists at any
+    ancestor — that case is the bootstrap path for `/noirdoc-setup`.
+    """
+    config_path = find_config(Path(cwd))
+    if config_path is None:
+        return False
+    try:
+        expanded = os.path.expanduser(path_str)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(cwd, expanded)
+        candidate = os.path.realpath(expanded)
+        target = os.path.realpath(str(config_path))
+    except (OSError, ValueError):
+        return False
+    return candidate == target
+
+
+def detects_vault_reference(command: str) -> str | None:
+    """Return the literal vault-shaped substring in `command`, or None.
+
+    Catches subshell wrappers (`bash -c "cat ~/.noirdoc/..."`) and the
+    `$HOME` / `${HOME}` forms that the token-based path extractor misses.
+    Also matches the resolved absolute vault path verbatim — covers cases
+    where Claude knows the user's home dir and uses the resolved form
+    inside an opaque subshell.
+    """
+    m = _VAULT_LITERAL_RE.search(command)
+    if m is not None:
+        return m.group(0).strip(" \t'\"`(=")
+    vault = _vault_root()
+    if vault is not None and vault in command:
+        return vault
+    return None
+
+
+def detects_config_modify(command: str, cwd: str) -> bool:
+    """True iff a Bash `command` references `.noirdoc/config.toml` *and* a
+    config already governs `cwd`.
+
+    Conservative — denies reads too. Use the Read tool to inspect the config;
+    Bash references stay opaque enough (redirects, subshells, here-docs) that
+    we can't reliably distinguish read from write, so we deny uniformly.
+    """
+    if find_config(Path(cwd)) is None:
+        return False
+    return bool(_CONFIG_LITERAL_RE.search(command))
+
+
 def is_vault_path(path_str: str, cwd: str) -> bool:
     """True iff `path_str` resolves to `~/.noirdoc` or anything underneath it.
 
@@ -268,6 +352,51 @@ def build_sdk_import_block_payload() -> dict[str, Any]:
     }
 
 
+def build_malformed_config_block_payload(config_path: Path, detail: str) -> dict[str, Any]:
+    reason = (
+        f"Blocked: `{config_path}` exists but is malformed ({detail}). The "
+        "noirdoc guard cannot decide what to protect from a config it cannot "
+        "parse, so it fails closed — denying tool calls is safer than silently "
+        "passing them through.\n"
+        "\n"
+        "Fix: ask the user to repair the file (or delete it to opt out of the "
+        "guard entirely). Do not edit it from inside this Claude session — "
+        "`.noirdoc/config.toml` modifications are blocked unconditionally."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+
+
+def build_workspace_config_block_payload() -> dict[str, Any]:
+    reason = (
+        "Blocked: this tool call would modify `.noirdoc/config.toml`. The "
+        "workspace config governs the noirdoc guard (which paths are protected, "
+        "whether the guard is enabled at all). Letting Claude rewrite it from "
+        "inside a session would let a prompt-injected turn flip "
+        "`guard.enabled = false` or push `**` into `allowlist`, defeating the "
+        "guardrail.\n"
+        "\n"
+        "This block is unconditional — it is not governed by `protected_paths` "
+        "or `allowlist`. Reads via the Read tool remain allowed.\n"
+        "\n"
+        "If the user wants to extend the allowlist, they should edit "
+        "`.noirdoc/config.toml` themselves in a regular terminal outside Claude "
+        "Code. `/noirdoc-allow` prints the line to add but does not write it."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+
+
 def build_vault_block_payload(matches: list[str]) -> dict[str, Any]:
     reason = (
         f"The following path(s) are inside the noirdoc vault (~/.noirdoc/): "
@@ -323,6 +452,19 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any] | None:
             return build_mapping_dump_block_payload()
         if isinstance(cmd, str) and detects_sdk_import(cmd):
             return build_sdk_import_block_payload()
+        if isinstance(cmd, str) and detects_config_modify(cmd, cwd):
+            return build_workspace_config_block_payload()
+        if isinstance(cmd, str):
+            literal = detects_vault_reference(cmd)
+            if literal is not None:
+                return build_vault_block_payload([literal])
+
+    if tool_name in ("Edit", "Write", "NotebookEdit"):
+        config_targets = [
+            p for p in extract_paths(tool_name, tool_input) if is_existing_workspace_config(p, cwd)
+        ]
+        if config_targets:
+            return build_workspace_config_block_payload()
 
     paths = extract_paths(tool_name, tool_input)
 
@@ -336,20 +478,38 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     config = load_config(config_path)
     if config is None:
-        return None
+        # File exists but didn't parse — fail closed. A workspace owner who
+        # placed `.noirdoc/config.toml` expects the guard active; silent
+        # bypass on a tampered or truncated file is the wrong default.
+        return build_malformed_config_block_payload(config_path, "TOML parse error")
 
     section = config.get("noirdoc", {})
     if not isinstance(section, dict):
+        # `[noirdoc]` missing or not a table → treat as opt-out. This is the
+        # "I have a `.noirdoc/config.toml` for some other tool" case.
         return None
 
     guard = section.get("guard", {})
-    if not isinstance(guard, dict) or not guard.get("enabled", True):
+    if not isinstance(guard, dict):
+        return build_malformed_config_block_payload(
+            config_path,
+            "`[noirdoc.guard]` is not a table",
+        )
+    if not guard.get("enabled", True):
         return None
 
     protected = guard.get("protected_paths", []) or []
     allowlist = guard.get("allowlist", []) or []
-    if not isinstance(protected, list) or not isinstance(allowlist, list):
-        return None
+    if not isinstance(protected, list):
+        return build_malformed_config_block_payload(
+            config_path,
+            "`noirdoc.guard.protected_paths` is not a list",
+        )
+    if not isinstance(allowlist, list):
+        return build_malformed_config_block_payload(
+            config_path,
+            "`noirdoc.guard.allowlist` is not a list",
+        )
 
     namespace = section.get("namespace", DEFAULT_NAMESPACE)
     if not isinstance(namespace, str):

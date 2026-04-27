@@ -281,16 +281,30 @@ class TestEvaluate:
             is None
         )
 
-    def test_malformed_toml_passes(self, workspace: Path) -> None:
+    def test_malformed_toml_fails_closed(self, workspace: Path) -> None:
+        """Regression for M3: a malformed config blocks everything until
+        repaired, rather than silently disabling the guard."""
         write_config(workspace, "this is = not valid = toml = [[")
+        result = guard.evaluate(
+            payload("Read", {"file_path": str(workspace / "safe" / "notes.md")}, workspace),
+        )
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "malformed" in reason.lower() or "parse" in reason.lower()
+
+    def test_no_config_at_all_passes(self, tmp_path: Path) -> None:
+        """The bootstrap case must remain fail-open — no config file at all
+        means the user has not opted in to the guard."""
         assert (
             guard.evaluate(
-                payload("Read", {"file_path": str(workspace / "incoming" / "foo.pdf")}, workspace),
+                payload("Read", {"file_path": str(tmp_path / "anything.pdf")}, tmp_path),
             )
             is None
         )
 
     def test_missing_noirdoc_section_passes(self, workspace: Path) -> None:
+        """`.noirdoc/config.toml` for some other tool — `[noirdoc]` missing
+        is treated as opt-out, not malformed."""
         write_config(workspace, "[other]\nvalue = 1\n")
         assert (
             guard.evaluate(
@@ -299,18 +313,41 @@ class TestEvaluate:
             is None
         )
 
-    def test_protected_paths_not_a_list_passes(self, workspace: Path) -> None:
+    def test_protected_paths_not_a_list_fails_closed(self, workspace: Path) -> None:
+        """Schema bug → fail closed. The user notices loudly instead of
+        running with a silently broken guard."""
         write_config(
             workspace,
             '[noirdoc]\nnamespace = "x"\n'
             '[noirdoc.guard]\nenabled = true\nprotected_paths = "not a list"\n',
         )
-        assert (
-            guard.evaluate(
-                payload("Read", {"file_path": str(workspace / "incoming" / "foo.pdf")}, workspace),
-            )
-            is None
+        result = guard.evaluate(
+            payload("Read", {"file_path": str(workspace / "safe" / "notes.md")}, workspace),
         )
+        assert result is not None
+        assert "protected_paths" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_allowlist_not_a_list_fails_closed(self, workspace: Path) -> None:
+        write_config(
+            workspace,
+            '[noirdoc]\nnamespace = "x"\n'
+            '[noirdoc.guard]\nenabled = true\nallowlist = "not a list"\n',
+        )
+        result = guard.evaluate(
+            payload("Read", {"file_path": str(workspace / "safe" / "notes.md")}, workspace),
+        )
+        assert result is not None
+        assert "allowlist" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_guard_section_not_a_table_fails_closed(self, workspace: Path) -> None:
+        write_config(
+            workspace,
+            '[noirdoc]\nnamespace = "x"\nguard = "not a table"\n',
+        )
+        result = guard.evaluate(
+            payload("Read", {"file_path": str(workspace / "safe" / "notes.md")}, workspace),
+        )
+        assert result is not None
 
     def test_bash_matching_path_blocks(self, workspace: Path) -> None:
         result = guard.evaluate(
@@ -549,6 +586,111 @@ class TestVaultBlock:
         )
         assert result is not None
 
+    def test_bash_subshell_cat_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Regression for H3: shlex collapses `bash -c "..."` into one token,
+        so the inner vault path is invisible to token-based extraction. The
+        literal vault-pattern scan must catch it."""
+        vault = self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": f'bash -c "cat {vault}/namespaces/mandant-foo/map.json"'},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_sh_dash_c_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "sh -c 'cat ~/.noirdoc/namespaces/foo/map.json'"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_home_var_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Regression for L4: `$HOME/.noirdoc/...` evades the token regex."""
+        self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "cat $HOME/.noirdoc/namespaces/foo/map.json"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_braced_home_var_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": 'cat "${HOME}/.noirdoc/namespaces/foo/map.json"'},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_python_dash_c_open_vault_blocks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Python one-liners that open the vault by literal path get caught
+        by the literal vault scan even though `import noirdoc` isn't there."""
+        self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {
+                    "command": (
+                        "python -c \"print(open('~/.noirdoc/namespaces/foo/map.json').read())\""
+                    ),
+                },
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_noirdoc_notes_does_not_match(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """`~/.noirdoc-notes/` must not be falsely matched as the vault."""
+        self._fake_home(monkeypatch, tmp_path)
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "cat ~/.noirdoc-notes/readme.md"},
+                tmp_path,
+            ),
+        )
+        # The token `~/.noirdoc-notes/readme.md` is path-shaped (starts `~/`),
+        # so token-based extraction surfaces it. is_vault_path resolves it to
+        # `<home>/.noirdoc-notes/readme.md`, which is not under the vault.
+        # The literal regex must also not match (boundary after `noirdoc`).
+        assert result is None
+
     def test_relative_traversal_into_vault_blocks(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -571,6 +713,122 @@ class TestVaultBlock:
         target.parent.mkdir()
         target.write_text("ok")
         result = guard.evaluate(payload("Read", {"file_path": str(target)}, tmp_path))
+        assert result is None
+
+
+# ---------- workspace config block ----------
+
+
+class TestWorkspaceConfigBlock:
+    """Edit/Write/Bash modifications of `.noirdoc/config.toml` are denied
+    once a config exists. Reads are still allowed (not tested here — the hook
+    has no Read-of-config branch); `/noirdoc-setup` can still create a config
+    when none exists."""
+
+    def test_edit_of_existing_config_blocked(self, workspace: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Edit",
+                {"file_path": str(workspace / ".noirdoc" / "config.toml")},
+                workspace,
+            ),
+        )
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert ".noirdoc/config.toml" in reason
+
+    def test_write_of_existing_config_blocked(self, workspace: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Write",
+                {"file_path": str(workspace / ".noirdoc" / "config.toml"), "content": "x"},
+                workspace,
+            ),
+        )
+        assert result is not None
+
+    def test_edit_of_config_with_relative_path_blocked(self, workspace: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Edit",
+                {"file_path": ".noirdoc/config.toml"},
+                workspace,
+            ),
+        )
+        assert result is not None
+
+    def test_write_creates_first_config_passes(self, tmp_path: Path) -> None:
+        """No existing config → Write must succeed (this is `/noirdoc-setup`)."""
+        result = guard.evaluate(
+            payload(
+                "Write",
+                {"file_path": str(tmp_path / ".noirdoc" / "config.toml"), "content": "x"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+    def test_bash_redirect_into_config_blocked(self, workspace: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "echo 'enabled = false' > .noirdoc/config.toml"},
+                workspace,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_sed_inplace_blocked(self, workspace: Path) -> None:
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "sed -i 's/true/false/' .noirdoc/config.toml"},
+                workspace,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_subshell_redirect_blocked(self, workspace: Path) -> None:
+        """Regression for H3 + H2: nested `bash -c` referencing the config."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": 'bash -c "echo enabled=false > .noirdoc/config.toml"'},
+                workspace,
+            ),
+        )
+        assert result is not None
+
+    def test_bash_no_config_passes(self, tmp_path: Path) -> None:
+        """No existing config → Bash references to `.noirdoc/config.toml` pass.
+
+        (`/noirdoc-setup` may shell out to write a fresh config; the literal
+        block only applies once a config exists to be tampered with.)"""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "echo namespace = 'x' > .noirdoc/config.toml"},
+                tmp_path,
+            ),
+        )
+        assert result is None
+
+    def test_edit_unrelated_file_passes(self, workspace: Path) -> None:
+        target = workspace / "safe" / "notes.md"
+        target.parent.mkdir(exist_ok=True)
+        result = guard.evaluate(
+            payload("Edit", {"file_path": str(target)}, workspace),
+        )
+        assert result is None
+
+    def test_edit_cache_file_passes(self, workspace: Path) -> None:
+        """`.noirdoc/cache/*` must remain editable — that's where redacted copies land."""
+        cache = workspace / ".noirdoc" / "cache"
+        cache.mkdir()
+        target = cache / "abc.pdf"
+        result = guard.evaluate(
+            payload("Edit", {"file_path": str(target)}, workspace),
+        )
         assert result is None
 
 
@@ -626,6 +884,59 @@ class TestMappingDumpBlock:
             payload("Bash", {"command": "noirdoc lookup --help"}, tmp_path),
         )
         assert result is None
+
+    def test_ns_show_short_help_passes(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns show -h"}, tmp_path),
+        )
+        assert result is None
+
+    def test_ns_show_version_passes(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns show --version"}, tmp_path),
+        )
+        assert result is None
+
+    def test_ns_show_flag_first_blocked(self, tmp_path: Path) -> None:
+        """Regression for H1: leading `--json` evades the old `(?=[^\\s-])`
+        lookahead but still dumps the mapping."""
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns show --json mandant-foo"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_lookup_flag_first_blocked(self, tmp_path: Path) -> None:
+        """Regression for H1: `--namespace` before the pseudonym is the natural
+        argparse-style form but evaded the old regex."""
+        result = guard.evaluate(
+            payload(
+                "Bash",
+                {"command": "noirdoc lookup --namespace mandant-foo '<<PERSON_1>>'"},
+                tmp_path,
+            ),
+        )
+        assert result is not None
+
+    def test_ns_show_double_dash_separator_blocked(self, tmp_path: Path) -> None:
+        """Regression for H1: argparse's `--` end-of-options separator."""
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns show -- mandant-foo"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_lookup_double_dash_separator_blocked(self, tmp_path: Path) -> None:
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc lookup -- '<<PERSON_1>>'"}, tmp_path),
+        )
+        assert result is not None
+
+    def test_ns_show_bare_blocked(self, tmp_path: Path) -> None:
+        """Bare `noirdoc ns show` with no args — block conservatively rather
+        than guessing whether the CLI prints help or errors."""
+        result = guard.evaluate(
+            payload("Bash", {"command": "noirdoc ns show"}, tmp_path),
+        )
+        assert result is not None
 
     def test_ns_list_passes(self, tmp_path: Path) -> None:
         """`ns list` only prints namespace names and must not be blocked."""
