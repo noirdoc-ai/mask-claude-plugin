@@ -5,6 +5,59 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-04-27
+
+Security audit pass. Four bypasses of guarantees the README/SECURITY.md
+advertised as solid in 0.1.0 are now closed. The workspace-config guard
+became an unconditional, non-allowlistable rule, which changes how
+`/noirdoc-allow` works — see "Changed" below.
+
+### Security
+- **H1.** `noirdoc ns show` / `noirdoc lookup` mapping-dump block previously
+  failed for any flag-first invocation: `noirdoc ns show --json <ns>` and
+  `noirdoc lookup --namespace <ns> '<<PERSON_1>>'` both sailed past the
+  `(?=[^\s-])` lookahead. The argparse `--` end-of-options separator did
+  too. Replaced with a negative lookahead that only carves out `-h`,
+  `--help`, and `--version` literally — every other invocation form is
+  blocked, including bare `noirdoc ns show` with no args.
+- **H2.** `.noirdoc/config.toml` was editable from inside a session, so a
+  prompt-injected Claude could flip `guard.enabled = false` or push `**`
+  into `allowlist` to neutralize the workspace guardrail. The hook now
+  unconditionally denies `Edit` / `Write` / `NotebookEdit` of the workspace
+  config and any `Bash` command that references it literally. The block
+  only fires once a config exists, so `/noirdoc-setup` can still create a
+  fresh one. Reads via the `Read` tool remain allowed (the config has no
+  PII).
+- **H3 + L4.** `shlex.split` collapses `bash -c "..."`, `sh -c "..."`, and
+  `eval "..."` bodies into one opaque token, so the token-based vault check
+  missed `bash -c "cat ~/.noirdoc/..."`. Added a literal vault-pattern
+  scan over the full command string covering `~/.noirdoc/`,
+  `$HOME/.noirdoc/`, `${HOME}/.noirdoc/`, absolute home-dir paths under
+  `/Users/...` and `/home/...`, and a substring check against the resolved
+  realpath of the vault.
+- **M3.** Fail-open on a malformed `.noirdoc/config.toml` flipped to
+  fail-closed. A workspace owner who placed the file expects the guard
+  active; silent bypass on a tampered or truncated config was the wrong
+  default. The "no config at all" bootstrap case stays fail-open. Schema
+  errors — non-table `[noirdoc.guard]`, non-list `protected_paths` or
+  `allowlist` — now return a deny payload pointing at the file with a
+  short repair-or-delete message.
+
+### Changed
+- `/noirdoc-allow` no longer edits `.noirdoc/config.toml` directly (H2
+  blocks that). The command now shows the user the new `allowlist` line
+  and asks them to add it themselves in a regular terminal or editor,
+  outside Claude Code. `/noirdoc-status` afterwards confirms the new
+  entry is in effect.
+- Module docstring in `noirdoc/hooks/guard.py` updated to reflect the
+  new fail-closed-on-malformed posture.
+
+### Tests
+- 88 → 107 unit tests. New `TestWorkspaceConfigBlock` class; expanded
+  `TestMappingDumpBlock` and `TestVaultBlock` with regression coverage
+  for H1, H2, H3, L4; `TestEvaluate` malformed-config cases rewritten
+  to assert deny.
+
 ## [0.1.0] — 2026-04-27
 
 First public release.
@@ -57,5 +110,6 @@ First public release.
   the fundamental limit that plugin-layer hooks cannot retroactively scrub content
   already in the transcript.
 
-[Unreleased]: https://github.com/nextaim-de/noirdoc-claude-plugin/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/nextaim-de/noirdoc-claude-plugin/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nextaim-de/noirdoc-claude-plugin/releases/tag/v0.2.0
 [0.1.0]: https://github.com/nextaim-de/noirdoc-claude-plugin/releases/tag/v0.1.0
