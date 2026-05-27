@@ -2,6 +2,23 @@
 # This file exists only to configure developer tooling (pytest, ruff, mypy) for the
 # stdlib-only hook script and its tests.
 
+[project]
+name = "noirdoc-mask-guard"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff==0.15.14",
+    "mypy>=1.19.1",
+    "pre-commit>=4.0",
+]
+
+[tool.uv]
+package = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["noirdoc/hooks"]
@@ -11,9 +28,13 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
-strict = false
