@@ -169,14 +169,15 @@ The guard fails open: workspaces without `.noirdoc/config.toml` experience no bl
 
 ## Development
 
+This repo uses the shared noirdoc tooling standard (`uv` + ruff/mypy). Common tasks go through `make`:
+
 ```bash
-git clone https://github.com/nextaim-de/noirdoc-claude-plugin
-cd noirdoc-claude-plugin
-pip install pytest ruff pre-commit
-pre-commit install
-pytest            # runs the guard hook unit tests
-ruff check .
+make install   # set up the dev environment
+make check     # lint + format-check + typecheck + test — run before pushing
+make test      # run the test suite (guard hook unit tests)
 ```
+
+Run `make help` for the full list of targets (also: `make lint`, `make fmt`, `make typecheck`).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor flow.
 

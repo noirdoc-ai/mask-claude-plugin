@@ -178,9 +178,7 @@ def is_protected(rel_path: str, protected: list[str], allowlist: list[str]) -> b
     """True iff `rel_path` matches any protected pattern and no allowlist pattern."""
     if not any(match_pattern(rel_path, pat) for pat in protected):
         return False
-    if any(match_pattern(rel_path, pat) for pat in allowlist):
-        return False
-    return True
+    return not any(match_pattern(rel_path, pat) for pat in allowlist)
 
 
 def extract_paths(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
@@ -227,10 +225,7 @@ def to_relative(path_str: str, workspace_root: Path) -> str:
     """Return `path_str` relative to `workspace_root`, or the original string if outside."""
     try:
         p = Path(path_str).expanduser()
-        if not p.is_absolute():
-            p = (workspace_root / p).resolve()
-        else:
-            p = p.resolve()
+        p = (workspace_root / p).resolve() if not p.is_absolute() else p.resolve()
         return str(p.relative_to(workspace_root))
     except (ValueError, OSError):
         return path_str
