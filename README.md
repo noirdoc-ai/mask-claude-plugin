@@ -1,12 +1,12 @@
 # noirdoc-claude-plugin
 
-[![CI](https://github.com/nextaim-de/noirdoc-claude-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/nextaim-de/noirdoc-claude-plugin/actions/workflows/ci.yml)
+[![CI](https://github.com/noirdoc-ai/mask-claude-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/noirdoc-ai/mask-claude-plugin/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12 | 3.13](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
 
 **Privacy-preserving document workflow for Claude Code.** Redact PII on the way in, stage placeholder answers on the way out. Real names never enter Claude's context — the user reveals them in their own terminal, outside Claude Code. German-first, local by default.
 
-Powered by [noirdoc](https://github.com/nextaim-de/noirdoc).
+Powered by [noirdoc](https://github.com/noirdoc-ai/mask-engine).
 
 > **Status:** alpha (`0.1.x`). Behaviour and config may change before `1.0`.
 
@@ -36,7 +36,7 @@ With this plugin installed:
 Inside Claude Code:
 
 ```
-/plugin marketplace add nextaim-de/noirdoc-claude-plugin
+/plugin marketplace add noirdoc-ai/mask-claude-plugin
 /plugin install noirdoc@nextaim
 ```
 
@@ -47,7 +47,7 @@ To update later: `/plugin update noirdoc`.
 ### Local install (for development)
 
 ```bash
-git clone https://github.com/nextaim-de/noirdoc-claude-plugin
+git clone https://github.com/noirdoc-ai/mask-claude-plugin
 # Then, inside Claude Code:
 # /plugin install /path/to/noirdoc-claude-plugin
 ```
@@ -57,7 +57,7 @@ git clone https://github.com/nextaim-de/noirdoc-claude-plugin
 In a workspace with sensitive documents:
 
 ```
-/noirdoc-setup
+/noirdoc:noirdoc-setup
 ```
 
 This walks you through: installing `noirdoc[full]` (with consent), picking a namespace, confirming default protected paths, and writing `.noirdoc/config.toml`.
@@ -70,10 +70,10 @@ Reveal is intentionally **not** a slash command. It runs in your own terminal, o
 
 | Command | Purpose |
 |---|---|
-| `/noirdoc-setup` | First-run setup: install check, namespace, protected paths, config file. Idempotent. |
-| `/noirdoc-redact <path>` | Redact a file into `.noirdoc/cache/`. |
-| `/noirdoc-status` | Show CLI version, namespace, protected paths, cache size. |
-| `/noirdoc-allow <path>` | Add a path to the guard's allowlist. Requires confirmation. |
+| `/noirdoc:noirdoc-setup` | First-run setup: install check, namespace, protected paths, config file. Idempotent. |
+| `/noirdoc:noirdoc-redact <path>` | Redact a file into `.noirdoc/cache/`. |
+| `/noirdoc:noirdoc-status` | Show CLI version, namespace, protected paths, cache size. |
+| `/noirdoc:noirdoc-allow <path>` | Add a path to the guard's allowlist. Requires confirmation. |
 
 ## Configuration
 
@@ -101,7 +101,7 @@ dir = ".noirdoc/cache"
 - **`namespace`** — the noirdoc namespace for this workspace. One per workspace is the sensible default (keeps placeholders consistent across files).
 - **`guard.enabled`** — set `false` to disable protection without uninstalling.
 - **`guard.protected_paths`** — glob patterns (relative to this config's directory). Supports `prefix/**` for directory-wide protection and fnmatch globs against full paths and basenames.
-- **`guard.allowlist`** — exceptions to `protected_paths`. Extend via `/noirdoc-allow`.
+- **`guard.allowlist`** — exceptions to `protected_paths`. Extend via `/noirdoc:noirdoc-allow`.
 - **`cache.dir`** — where redacted copies live. Should be gitignored.
 
 ## Threat model — what this plugin does and does not protect
@@ -116,7 +116,7 @@ Be clear-eyed about what a Claude Code plugin can and cannot do. Sensitive conte
 | `Grep` / `Glob` with `path` in a protected directory | ✅ | Same block mechanism. |
 | `NotebookRead` / `NotebookEdit` of a notebook in a protected path | ✅ | `notebook_path` is checked. |
 | `WebFetch` on `file://` URLs pointing at protected paths | ✅ | Local `file://` URLs are extracted and checked. |
-| `Bash` referencing a clearly-path-shaped token (`cat ./incoming/x.pdf`) | ⚠️ Best-effort | Simple cases only. Pipes, process substitution, `$(...)`, globbing by the shell — **not parsed**. Use `/noirdoc-redact` first for complex flows. |
+| `Bash` referencing a clearly-path-shaped token (`cat ./incoming/x.pdf`) | ⚠️ Best-effort | Simple cases only. Pipes, process substitution, `$(...)`, globbing by the shell — **not parsed**. Use `/noirdoc:noirdoc-redact` first for complex flows. |
 | Any tool touching `~/.noirdoc/` (the reversible mapping vault) | ✅ Unconditional | Resolved via `realpath` so `~`, absolute paths, symlinks, and `..` traversal all normalize. Independent of workspace config. Not allowlistable. |
 | `Bash` invoking `noirdoc ns show <ns>` or `noirdoc lookup <pseudonym>` | ✅ Unconditional | Both subcommands print real-name data to stdout, which would otherwise land in tool-result context. Regex-matched; bypassed by aliases (see gaps). |
 | `Bash` invoking the noirdoc Python SDK (`from noirdoc...`, `import noirdoc`) | ✅ Unconditional | The SDK reads the same reverse mapping that `ns show` exposes. Regex-matched against the literal `from`/`import` keywords; bypassable by encoded payloads or `__import__("noirdoc")`. |
@@ -127,7 +127,7 @@ Be clear-eyed about what a Claude Code plugin can and cannot do. Sensitive conte
 
 | Entry path | Why it's out of reach | Mitigation |
 |---|---|---|
-| User pastes raw PII into the chat | `PreToolUse` cannot see user prompts. See the "user-prompt scanning" section below for why this is deferred. | Redact the source file with `/noirdoc-redact` and paste from the clean copy. |
+| User pastes raw PII into the chat | `PreToolUse` cannot see user prompts. See the "user-prompt scanning" section below for why this is deferred. | Redact the source file with `/noirdoc:noirdoc-redact` and paste from the clean copy. |
 | `Grep` / `Glob` with no explicit `path` (defaults to workspace root) | Can surface snippets from protected files in tool output. | Add narrow `path=` arguments to searches on sensitive workspaces, or disable the tool for sensitive sessions. |
 | MCP server tool outputs | MCP servers run in their own processes and return arbitrary text. | Only use MCP servers you trust on sensitive workspaces. |
 | Subagent (`Agent` tool) results | Sub-agents can read content whose bytes then come back as a tool result to the parent. Plugin hooks should apply inside sub-agents, but assume nothing until verified. | Don't dispatch sub-agents onto protected paths without checking the subagent's config. |
@@ -151,7 +151,7 @@ The plan's current answer: the skill nudges the user to paste from redacted copi
 
 ### Other caveats
 
-- **PDF reveal is not supported** by noirdoc. You get a textual answer with real names restored, not a revealed PDF. See the [noirdoc README](https://github.com/nextaim-de/noirdoc#supported-formats) for the full round-trip support matrix.
+- **PDF reveal is not supported** by noirdoc. You get a textual answer with real names restored, not a revealed PDF. See the [noirdoc README](https://github.com/noirdoc-ai/mask-engine#supported-formats) for the full round-trip support matrix.
 - **PPTX and images** redact but don't round-trip on reveal.
 - **Detection quality depends on noirdoc's upstream models.** For high-stakes documents, spot-check the redacted copy before trusting the output.
 - **The namespace mapping is reversible.** `~/.noirdoc/namespaces/<namespace>/` holds the real→placeholder map. Treat it with the same care as a secrets directory. The guard hard-blocks, unconditionally and non-allowlistably: (a) any tool call touching a path inside `~/.noirdoc/`, (b) any Bash invocation of `noirdoc ns show`, `noirdoc lookup`, or `noirdoc reveal` (all three print real-name data to stdout), (c) any Bash invocation that imports the noirdoc Python SDK with literal `from noirdoc...` / `import noirdoc...` keywords (the SDK reads the same mapping data), and (d) any read-shaped tool call (`Read`/`Edit`/`Grep`/`Glob`/`NotebookRead`/`NotebookEdit`/`Bash`/`file://` `WebFetch`) against `.noirdoc/staged/**` (the assistant writes its placeholder-only answers there; reading them back would re-pull text into a fresh tool result). This closes the obvious exfil paths — filesystem reads of the vault, mapping-dump CLI subcommands, SDK one-liners, in-session reveal, and round-tripped staged content. The supported reveal path is for the user to run `noirdoc reveal --namespace <ns> < .noirdoc/staged/<ts>.txt` in a regular terminal **outside Claude Code** — real names appear there, the assistant's transcript never sees them.

@@ -4,7 +4,7 @@
 
 Use GitHub's private vulnerability reporting:
 
-**<https://github.com/nextaim-de/noirdoc-claude-plugin/security/advisories/new>**
+**<https://github.com/noirdoc-ai/mask-claude-plugin/security/advisories/new>**
 
 Please do not open a public issue for security bugs. We will acknowledge reports as soon as we can and coordinate a fix and disclosure with you.
 
@@ -26,7 +26,7 @@ This plugin is pre-1.0 and changes quickly. Security issues are taken seriously,
 - Anything that causes `noirdoc reveal`'s output, vault contents, or `.noirdoc/staged/**` content to land in a tool result. The reveal/staging policy is "no real names in the transcript, ever" — a regression here is a privacy bug.
 
 **Out of scope — upstream or architectural:**
-- Detection quality — false negatives in `noirdoc redact`. These are quality issues upstream in [noirdoc-core](https://github.com/nextaim-de/noirdoc/blob/main/SECURITY.md); open an issue there with a test case.
+- Detection quality — false negatives in `noirdoc redact`. These are quality issues upstream in [mask-engine](https://github.com/noirdoc-ai/mask-engine/blob/main/SECURITY.md); open an issue there with a test case.
 - The documented architectural limits in [README.md — Threat model](README.md#threat-model--what-this-plugin-does-and-does-not-protect), including:
   - Content already in the transcript from earlier turns (API replay).
   - User prompts (`UserPromptSubmit` scanning is deferred — see README).

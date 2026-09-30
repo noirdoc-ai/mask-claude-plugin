@@ -1283,3 +1283,20 @@ class TestScriptIntegration:
             timeout=5,
         )
         assert proc.returncode == 0
+
+
+class TestSlashCommandNames:
+    """Plugin commands are namespaced by Claude Code as /<plugin>:<command>
+    (plugin name "noirdoc"), so user-facing hints must use /noirdoc:noirdoc-*."""
+
+    def test_block_payload_names_namespaced_allow_command(self) -> None:
+        reason = guard.build_block_payload("test-ns", ["incoming/foo.pdf"])["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        assert "/noirdoc:noirdoc-allow <path>" in reason
+
+    def test_workspace_config_block_names_namespaced_allow_command(self) -> None:
+        reason = guard.build_workspace_config_block_payload()["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        assert "/noirdoc:noirdoc-allow" in reason

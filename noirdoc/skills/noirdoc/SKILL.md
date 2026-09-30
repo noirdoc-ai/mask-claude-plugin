@@ -96,7 +96,7 @@ For any task on a protected/sensitive document, run this sequence:
 When a `PreToolUse` block comes back with `"path '<x>' is noirdoc-protected"`, the guardrail caught you trying to read a raw file. Do **not**:
 
 - Retry the same read (it will keep blocking).
-- Immediately call `/noirdoc-allow` to silence the guard — that defeats the purpose.
+- Immediately call `/noirdoc:noirdoc-allow` to silence the guard — that defeats the purpose.
 - Ask the user to disable the guard.
 
 Do:
@@ -150,9 +150,9 @@ There is no in-session reveal. You never invoke `noirdoc reveal` — the guard h
 
 ## Related commands
 
-- `/noirdoc-setup` — run the setup flow explicitly (idempotent).
-- `/noirdoc-redact <path>` — one-shot redact without round-trip.
-- `/noirdoc-status` — show current namespace, protected paths, cache size, noirdoc version.
-- `/noirdoc-allow <path>` — append a path to the allowlist. Requires confirming with the user first.
+- `/noirdoc:noirdoc-setup` — run the setup flow explicitly (idempotent).
+- `/noirdoc:noirdoc-redact <path>` — one-shot redact without round-trip.
+- `/noirdoc:noirdoc-status` — show current namespace, protected paths, cache size, noirdoc version.
+- `/noirdoc:noirdoc-allow <path>` — append a path to the allowlist. Requires confirming with the user first.
 
 Reveal is intentionally **not** a slash command. It runs in the user's own terminal, outside Claude Code: `noirdoc reveal --namespace <ns> < .noirdoc/staged/<file>`. The skill's round-trip prints the exact form for the user to copy.

@@ -5,6 +5,17 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Docs and user-facing hints now use the namespaced slash-command names
+  Claude Code actually registers (`/noirdoc:noirdoc-setup`,
+  `/noirdoc:noirdoc-redact`, `/noirdoc:noirdoc-status`,
+  `/noirdoc:noirdoc-allow`), including the guard's block messages.
+- Repository links point at the moved repos: this plugin is
+  `noirdoc-ai/mask-claude-plugin` (manifest `repository`, install command,
+  badges), the engine is `noirdoc-ai/mask-engine`. The old
+  `nextaim-de/...` URLs only worked through GitHub's rename redirect.
+
 ## [0.2.1] — 2026-04-27
 
 Privacy fix: closes the gap between the README's "real names never enter
@@ -166,7 +177,7 @@ First public release.
   the fundamental limit that plugin-layer hooks cannot retroactively scrub content
   already in the transcript.
 
-[Unreleased]: https://github.com/nextaim-de/noirdoc-claude-plugin/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/nextaim-de/noirdoc-claude-plugin/releases/tag/v0.2.1
-[0.2.0]: https://github.com/nextaim-de/noirdoc-claude-plugin/releases/tag/v0.2.0
-[0.1.0]: https://github.com/nextaim-de/noirdoc-claude-plugin/releases/tag/v0.1.0
+[Unreleased]: https://github.com/noirdoc-ai/mask-claude-plugin/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/noirdoc-ai/mask-claude-plugin/releases/tag/v0.2.1
+[0.2.0]: https://github.com/noirdoc-ai/mask-claude-plugin/releases/tag/v0.2.0
+[0.1.0]: https://github.com/noirdoc-ai/mask-claude-plugin/releases/tag/v0.1.0

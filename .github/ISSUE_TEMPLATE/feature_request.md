@@ -6,7 +6,7 @@ labels: enhancement
 assignees: ""
 ---
 
-**If your idea is about PII detection itself** (new recognizers, better German coverage, reveal format support), it probably belongs in [noirdoc-core](https://github.com/nextaim-de/noirdoc/issues) rather than here. This repo is the Claude Code integration layer only.
+**If your idea is about PII detection itself** (new recognizers, better German coverage, reveal format support), it probably belongs in [mask-engine](https://github.com/noirdoc-ai/mask-engine/issues) rather than here. This repo is the Claude Code integration layer only.
 
 ## Problem
 
@@ -25,4 +25,4 @@ assignees: ""
 Is this in scope for the plugin? A quick sanity check against the non-goals listed in the [README](../../README.md) and the [plan](../../docs/RELEASING.md) — features like content-heuristic triggering, other IDE integrations, or in-flight API payload rewriting are explicitly out of scope here.
 
 - [ ] I've checked this isn't already in the non-goals list.
-- [ ] I've checked this isn't upstream in `noirdoc-core`.
+- [ ] I've checked this isn't upstream in `mask-engine`.
