@@ -25,10 +25,10 @@ users install.
    - Create a GitHub Release with that body.
 7. **Smoke test.** In a fresh Claude Code workspace:
    ```
-   /plugin marketplace add nextaim-de/noirdoc-claude-plugin
+   /plugin marketplace add noirdoc-ai/mask-claude-plugin
    /plugin install noirdoc@nextaim
    ```
-   Restart Claude Code. Confirm `/noirdoc-status` responds and the skill surfaces on a prompt that mentions a sensitive path.
+   Restart Claude Code. Confirm `/noirdoc:noirdoc-status` responds and the skill surfaces on a prompt that mentions a sensitive path.
 
 ## Tag shape
 

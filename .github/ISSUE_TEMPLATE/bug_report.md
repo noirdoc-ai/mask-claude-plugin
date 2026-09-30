@@ -6,7 +6,7 @@ labels: bug
 assignees: ""
 ---
 
-**For security-sensitive bugs** (guardrail bypass, config parsing flaws that let protected content through), do not open a public issue — use [private vulnerability reporting](https://github.com/nextaim-de/noirdoc-claude-plugin/security/advisories/new) instead. See [SECURITY.md](../../SECURITY.md).
+**For security-sensitive bugs** (guardrail bypass, config parsing flaws that let protected content through), do not open a public issue — use [private vulnerability reporting](https://github.com/noirdoc-ai/mask-claude-plugin/security/advisories/new) instead. See [SECURITY.md](../../SECURITY.md).
 
 ## What happened
 

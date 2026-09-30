@@ -107,7 +107,7 @@ _REVEAL_RES = (
 # workspace guard. Once a config exists, Edit/Write/NotebookEdit on it and any
 # Bash command that references it literally are denied.
 # Reads remain allowed (the Read tool is fine; the config has no PII), and the
-# block does not apply when no config exists yet so that `/noirdoc-setup` can
+# block does not apply when no config exists yet so that `/noirdoc:noirdoc-setup` can
 # create one.
 _CONFIG_LITERAL_RE = re.compile(r"\.noirdoc/config\.toml\b", re.IGNORECASE)
 
@@ -245,7 +245,7 @@ def _vault_root() -> str | None:
 def is_existing_workspace_config(path_str: str, cwd: str) -> bool:
     """True iff `path_str` resolves to the `.noirdoc/config.toml` that already
     governs `cwd` (via walk-up). Returns False when no config exists at any
-    ancestor — that case is the bootstrap path for `/noirdoc-setup`.
+    ancestor — that case is the bootstrap path for `/noirdoc:noirdoc-setup`.
     """
     config_path = find_config(Path(cwd))
     if config_path is None:
@@ -492,7 +492,7 @@ def build_workspace_config_block_payload() -> dict[str, Any]:
         "\n"
         "If the user wants to extend the allowlist, they should edit "
         "`.noirdoc/config.toml` themselves in a regular terminal outside Claude "
-        "Code. `/noirdoc-allow` prints the line to add but does not write it."
+        "Code. `/noirdoc:noirdoc-allow` prints the line to add but does not write it."
     )
     return {
         "hookSpecificOutput": {
@@ -536,7 +536,7 @@ def build_block_payload(namespace: str, matches: list[str]) -> dict[str, Any]:
         f"  noirdoc redact --namespace {namespace} <path> -o .noirdoc/cache/<name>.<ext>\n"
         "\n"
         "Then retry with the redacted path. If this file genuinely does not contain\n"
-        "personal data, ask the user before running /noirdoc-allow <path> — adding to\n"
+        "personal data, ask the user before running /noirdoc:noirdoc-allow <path> — adding to\n"
         "the allowlist disables the guardrail for that path."
     )
     return {

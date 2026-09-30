@@ -19,7 +19,7 @@
         "url": "https://nextaim.de"
       },
       "homepage": "https://noirdoc.de",
-      "repository": "https://github.com/nextaim-de/noirdoc-claude-plugin",
+      "repository": "https://github.com/noirdoc-ai/mask-claude-plugin",
       "license": "MIT",
       "keywords": [
         "pii",

@@ -3,7 +3,7 @@
 Thanks for your interest. This plugin is early — behaviour and config shape may change before `1.0` — but contributions are welcome, especially around hook coverage, skill prompts, and first-run UX.
 
 If your change is about PII detection itself (new recognizers, upstream model
-behaviour, redact/reveal formats), it probably belongs in [noirdoc-core](https://github.com/nextaim-de/noirdoc) rather than here. This repo is the Claude Code integration layer; it shells out to the `noirdoc` CLI and does not reimplement detection.
+behaviour, redact/reveal formats), it probably belongs in [mask-engine](https://github.com/noirdoc-ai/mask-engine) rather than here. This repo is the Claude Code integration layer; it shells out to the `noirdoc` CLI and does not reimplement detection.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ behaviour, redact/reveal formats), it probably belongs in [noirdoc-core](https:/
 ## Dev setup
 
 ```bash
-git clone https://github.com/nextaim-de/noirdoc-claude-plugin
+git clone https://github.com/noirdoc-ai/mask-claude-plugin
 cd noirdoc-claude-plugin
 pip install pytest ruff pre-commit
 pre-commit install
@@ -45,7 +45,7 @@ The unit tests cover the hook, not the skill. To test the full workflow:
 ```bash
 # From a separate workspace with a sensitive document:
 /plugin install /path/to/noirdoc-claude-plugin
-/noirdoc-setup
+/noirdoc:noirdoc-setup
 # Ask Claude to summarize a file under ./incoming/; confirm the round-trip runs.
 ```
 
@@ -63,7 +63,7 @@ Only maintainers cut releases. The flow is tag-driven — see [docs/RELEASING.md
 
 ## Reporting bugs
 
-Open an issue at <https://github.com/nextaim-de/noirdoc-claude-plugin/issues>. Include:
+Open an issue at <https://github.com/noirdoc-ai/mask-claude-plugin/issues>. Include:
 - Claude Code version
 - `noirdoc --version`
 - Python version and OS

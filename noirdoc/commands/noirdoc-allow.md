@@ -41,6 +41,6 @@ Steps:
 
    In practice the cleanest path is: open `.noirdoc/config.toml` in your editor and add the line by hand.
 
-3. After they confirm they've made the change, run `/noirdoc-status` to verify the new allowlist is in effect.
+3. After they confirm they've made the change, run `/noirdoc:noirdoc-status` to verify the new allowlist is in effect.
 
-If the user does not confirm, or `.noirdoc/config.toml` doesn't exist (run `/noirdoc-setup` first), stop without taking any action.
+If the user does not confirm, or `.noirdoc/config.toml` doesn't exist (run `/noirdoc:noirdoc-setup` first), stop without taking any action.

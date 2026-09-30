@@ -7,7 +7,7 @@ Redact the file at `$ARGUMENTS` using the namespace from `.noirdoc/config.toml`.
 
 Steps:
 
-1. Verify `.noirdoc/config.toml` exists. If not, run `/noirdoc-setup` first (do not prompt — just tell the user and stop).
+1. Verify `.noirdoc/config.toml` exists. If not, run `/noirdoc:noirdoc-setup` first (do not prompt — just tell the user and stop).
 2. Read the `noirdoc.namespace` value from the config.
 3. Compute a 12-char sha256 hash of the input path to name the clean copy (`.noirdoc/cache/<hash>.<ext>`).
 4. Ensure `.noirdoc/cache/` exists.
